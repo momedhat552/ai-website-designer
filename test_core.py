@@ -53,5 +53,26 @@ class T(unittest.TestCase):
     def test_real_call_import_is_lazy(self):
         import sys
         self.assertNotIn("google.genai", sys.modules)  # importing core must not need the SDK
+    def test_stream_events_are_forwarded(self):
+        events = []
+        def fake(model, system, prompt, on_event=None):
+            on_event("chunk", "<!DOCTYPE html>")
+            on_event("chunk", "<html><body>Hi</body></html>")
+            return GOOD
+        html, _ = generate_site(fake, "x", models=["a"], sleep=nosleep,
+                                on_event=lambda kind, text: events.append((kind, text)))
+        self.assertEqual(html, GOOD)
+        self.assertEqual(events, [("start", ""),
+                                  ("chunk", "<!DOCTYPE html>"),
+                                  ("chunk", "<html><body>Hi</body></html>")])
+    def test_event_start_on_every_attempt(self):
+        starts = []
+        def fake(model, system, prompt, on_event=None):
+            if model == "a":
+                raise RetryableError("503")
+            return GOOD
+        generate_site(fake, "x", models=["a", "b"], sleep=nosleep,
+                      on_event=lambda kind, text: starts.append(kind))
+        self.assertEqual(starts, ["start", "start", "start"])
 
 unittest.main(verbosity=1)

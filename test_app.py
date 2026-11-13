@@ -28,6 +28,16 @@ class AppHelpersTest(unittest.TestCase):
         self.assertEqual(versions, ["first", "second"])
         self.assertEqual(app.undo(versions), ["first"])
 
+    def test_expected_html_size(self):
+        # An edit should aim for the size of the page it replaces.
+        self.assertEqual(app.expected_html_size("<html>" + "x" * 2000 + "</html>"), 2013)
+        # A first generation learns from earlier pages in the session.
+        self.assertEqual(app.expected_html_size(None, [30000, 50000]), 40000)
+        self.assertEqual(app.expected_html_size(None, []), app.DEFAULT_EXPECTED_SIZE)
+        # Tiny or missing history never gives a divide-by-zero-sized target.
+        self.assertEqual(app.expected_html_size(None, [0]), app.DEFAULT_EXPECTED_SIZE)
+        self.assertEqual(app.expected_html_size("hi"), 1000)
+
     def test_new_tab_page_escapes_site_html(self):
         page = app.new_tab_page("<!DOCTYPE html><html><script>alert(1)</script></html>")
         # The site's own </script> must not close the button's script tag.

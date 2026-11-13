@@ -35,8 +35,8 @@ Run the tests:
 .\.venv\Scripts\python.exe test_app.py
 ```
 
-`test_core.py` is the main suite (11 tests, fake model, no internet needed).
-`test_app.py` covers four small helpers from the UI file.
+`test_core.py` is the main suite (13 tests, fake model, no internet needed).
+`test_app.py` covers five small helpers from the UI file.
 
 Optional: `smoke.py` makes one real Gemini call and writes `smoke.html`, which is a quick
 way to check the API key without the browser:
@@ -66,7 +66,11 @@ or the network. The key is read from the environment, never from a file or the c
 Versions are kept as a list of HTML strings in `st.session_state["versions"]`; the last item
 is what the user sees. "Generate" and "Apply change" both call `core.generate_site`, with
 the current HTML passed as `current_html` for edits, so every edit is a full rewrite of the
-page. The preview uses `st.iframe`, which renders the HTML as an iframe in the browser only.
+page. Replies are streamed, so the progress bar tracks characters that have actually arrived
+against the expected size of the page (the current page for an edit, an average of earlier
+pages for the first request). A spinner marks the time the model spends thinking before the
+first character arrives. The preview uses `st.iframe`, which renders the HTML as an iframe
+in the browser only.
 "Open in new tab" uses a second tiny iframe with one button; the button asks the browser to
 make a temporary blob URL from the HTML that is already on the page, so nothing is stored or
 served by the server. The generated HTML is never executed on the server, never written into
@@ -97,6 +101,11 @@ broken app.
 - Free-tier limits are not published, and the free tier sometimes returns 429 or 503. The
   retries help, but a heavy session can still fail. The 15-generation cap protects quota on
   a public deployment.
+- The progress percentage is an estimate. The API does not say how long the answer will be,
+  so the bar compares received characters with the expected page size (with `~` in the
+  label). It stops at 95% until the reply is complete, and it can move faster or slower than
+  the real remaining work. The model can also spend minutes thinking before the first
+  character, which is why the spinner is there.
 - The page is one HTML file with inline CSS and optional small scripts. There are no
   external images, fonts, or frameworks, by design.
 - The preview runs the generated JavaScript in the browser iframe. Only use requests you

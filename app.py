@@ -1,6 +1,7 @@
 """Streamlit UI for the AI website designer."""
 import json
 import os
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -8,6 +9,9 @@ from dotenv import load_dotenv
 import core
 
 MAX_GENERATIONS = 15
+
+# Used only for the progress bar when there is no page size to compare against.
+DEFAULT_EXPECTED_SIZE = 50_000
 
 
 # --- Small pure helpers (tested in test_app.py) -----------------------------
@@ -43,6 +47,21 @@ def add_version(versions, html):
 def undo(versions):
     """Drop the newest version."""
     return versions[:-1]
+
+
+def expected_html_size(current_html=None, recent_sizes=(), default=DEFAULT_EXPECTED_SIZE):
+    """Best guess at how big the finished page will be, for the progress bar.
+
+    An edit returns the whole page again, so the current page is a good target.
+    A first generation uses the average of earlier ones in this session, or a
+    fixed default until there is something better.
+    """
+    if current_html:
+        return max(len(current_html), 1000)
+    sizes = [size for size in recent_sizes if size > 0]
+    if sizes:
+        return max(sum(sizes) // len(sizes), 1000)
+    return default
 
 
 def new_tab_page(html):
@@ -102,21 +121,56 @@ def open_in_new_tab(html):
 def generate(request, current_html):
     """Make one model call and return HTML, or None if it failed.
 
+    The reply is streamed, so the bar tracks characters that really arrived
+    against the expected size of the page. That size is an estimate, because
+    the API does not say in advance how long the answer will be.
     The counter goes up before the call, because a failed call still uses quota.
     """
     st.session_state["generations"] += 1
-    with st.spinner("Designing your website... this can take up to a minute."):
+    expected = expected_html_size(current_html, st.session_state.get("page_sizes", []))
+    state = {"received": 0, "updated_at": 0.0}
+
+    def on_event(kind, text):
+        if kind == "start":
+            state["received"] = 0
+            bar.progress(0.0, text="Contacting the model...")
+            return
+        state["received"] += len(text)
+        fraction = min(0.95, state["received"] / expected)
+        now = time.monotonic()
+        # Streamlit updates are cheap, but the model sends many tiny chunks.
+        if fraction < 0.95 and now - state["updated_at"] < 0.15:
+            return
+        state["updated_at"] = now
+        bar.progress(
+            fraction,
+            text=f"Receiving the page... ~{fraction:.0%} "
+                 f"({state['received'] // 1024} KB so far)",
+        )
+
+    # The spinner covers the time the model spends thinking, before any text
+    # arrives. The bar then shows characters really received.
+    with st.spinner("The model is working... this can take a few minutes."):
+        bar = st.progress(0.0, text="Contacting the model...")
         try:
             html, _model = core.generate_site(
-                core.real_call_model, request, current_html=current_html
+                core.real_call_model, request, current_html=current_html, on_event=on_event
             )
         except RuntimeError:
+            bar.empty()
             st.error("The model is busy, try again in a minute.")
             return None
         except Exception:
             # Never show a stack trace or the API key in the UI.
+            bar.empty()
             st.error("Something went wrong while generating the website. Try again.")
             return None
+
+        bar.progress(1.0, text="Page received. Checking the HTML...")
+
+    sizes = st.session_state.setdefault("page_sizes", [])
+    sizes.append(len(html))
+    del sizes[:-5]
     return html
 
 

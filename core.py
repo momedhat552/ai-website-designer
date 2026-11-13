@@ -58,15 +58,23 @@ def build_prompt(request, current_html=None):
 
 
 def generate_site(call_model, request, current_html=None, models=None,
-                  retries_per_model=2, sleep=time.sleep):
-    """call_model(model, system, prompt) -> text. Tries models in order with retries."""
+                  retries_per_model=2, sleep=time.sleep, on_event=None):
+    """call_model(model, system, prompt) -> text. Tries models in order with retries.
+
+    on_event, when given, is called as on_event("start", "") before each attempt
+    and on_event("chunk", text) for every streamed piece of the reply.
+    """
     models = models or get_models()
     prompt = build_prompt(request, current_html)
     last_err = None
     for model in models:
         for attempt in range(retries_per_model):
             try:
-                text = call_model(model, SYSTEM_PROMPT, prompt)
+                if on_event:
+                    on_event("start", "")
+                    text = call_model(model, SYSTEM_PROMPT, prompt, on_event=on_event)
+                else:
+                    text = call_model(model, SYSTEM_PROMPT, prompt)
                 return extract_html(text), model
             except ModelNotFound as e:
                 last_err = e
@@ -79,16 +87,30 @@ def generate_site(call_model, request, current_html=None, models=None,
     raise RuntimeError(f"All models failed. Last error: {last_err}")
 
 
-def real_call_model(model, system, prompt):
-    """The only function that touches google-genai. Imported lazily so tests don't need it."""
+def real_call_model(model, system, prompt, on_event=None):
+    """The only function that touches google-genai. Imported lazily so tests don't need it.
+
+    Without on_event this is one blocking call. With on_event the reply is
+    streamed and each piece is reported as on_event("chunk", text).
+    """
     from google import genai
     from google.genai import types, errors
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    config = types.GenerateContentConfig(system_instruction=system)
     try:
-        resp = client.models.generate_content(
-            model=model, contents=prompt,
-            config=types.GenerateContentConfig(system_instruction=system),
-        )
+        if on_event is None:
+            resp = client.models.generate_content(
+                model=model, contents=prompt, config=config,
+            )
+            return resp.text
+        parts = []
+        for chunk in client.models.generate_content_stream(
+            model=model, contents=prompt, config=config,
+        ):
+            if chunk.text:
+                parts.append(chunk.text)
+                on_event("chunk", chunk.text)
+        return "".join(parts)
     except errors.APIError as e:
         code = getattr(e, "code", None)
         if code in (429, 500, 503, 504):
@@ -96,4 +118,3 @@ def real_call_model(model, system, prompt):
         if code == 404:
             raise ModelNotFound(str(e))
         raise
-    return resp.text
